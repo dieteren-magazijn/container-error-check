@@ -100,7 +100,7 @@
 
   <header class="topbar">
     <div class="scanline"></div>
-    <span class="version">v1.12.1</span>
+    <span class="version">v1.13</span>
     <a href="radar.html" style="position:absolute;top:44px;right:28px;z-index:3;font-size:11.5px;color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.45);padding:3px 10px;border-radius:6px">&#128225; Radar</a>
     <div class="brand">
       <span class="brand-mark">◆</span>
@@ -205,6 +205,7 @@
           <option value="reserved">cannot change dimensions / ordered reserved inventory</option>
           <option value="batch">batch / vervaldatum-fout</option>
           <option value="overdelivery">overdelivery</option>
+          <option value="sourcedoc">source document amounts / invoicing has started</option>
           <option value="deadlock">deadlock (PurchTableVersion)</option>
           <option value="loadline">WHSLoadLine / record has never been selected</option>
         </select>
@@ -340,8 +341,8 @@ document.getElementById('tolerance').addEventListener('input',e=>{ tolerance=Num
 document.getElementById('search').addEventListener('input',analyze);
 document.querySelectorAll('.howto-toggle').forEach(btn=>{ btn.addEventListener('click',()=>{ document.getElementById(btn.dataset.target).classList.toggle('open'); }); });
 
-let CEC_lastCand=[]; let CEC_listOpen=false; let CEC_dismissed=new Set(); let CEC_focus=''; const CEC_FOCUS={reserved:{crossdockSO:3.5,workCreated:2,dupRef:0.8,expired:0.4,expirySoon:0.4,noDate:0.4,emptyBatch:0.4,noDateInconsistent:0.4,overdelivery:0.4},workcreated:{workCreated:3.5,dupRef:3,noDateInconsistent:1.6,noDate:1.4,emptyBatch:1.4,expired:0.6,expirySoon:0.4,overdelivery:0.4,crossdockSO:3.5},batch:{workCreated:0.5,expired:2,expirySoon:2,noDate:1.8,emptyBatch:1.8,noDateInconsistent:1.8,dupRef:0.5,overdelivery:0.4,crossdockSO:0.6},overdelivery:{workCreated:0.5,overdelivery:3,dupRef:0.5,expired:0.5,expirySoon:0.5,noDate:0.5,emptyBatch:0.5,noDateInconsistent:0.5,crossdockSO:0.6}};
-const CEC_DEFAULT={dupRef:3.5, expired:4.5, expirySoon:1.5, noDateInconsistent:3.0, noDate:1.0, emptyBatch:1.3, overdelivery:2.2, crossdockSO:4.0, workCreated:4.0};
+let CEC_lastCand=[]; let CEC_listOpen=false; let CEC_dismissed=new Set(); let CEC_focus=''; const CEC_FOCUS={reserved:{crossdockSO:3.5,workCreated:2,dupRef:0.8,expired:0.4,expirySoon:0.4,noDate:0.4,emptyBatch:0.4,noDateInconsistent:0.4,overdelivery:0.4},workcreated:{workCreated:3.5,dupRef:3,noDateInconsistent:1.6,noDate:1.4,emptyBatch:1.4,expired:0.6,expirySoon:0.4,overdelivery:0.4,crossdockSO:3.5},batch:{workCreated:0.5,expired:2,expirySoon:2,noDate:1.8,emptyBatch:1.8,noDateInconsistent:1.8,dupRef:0.5,overdelivery:0.4,crossdockSO:0.6},overdelivery:{workCreated:0.5,overdelivery:3,dupRef:0.5,expired:0.5,expirySoon:0.5,noDate:0.5,emptyBatch:0.5,noDateInconsistent:0.5,crossdockSO:0.6},sourcedoc:{invoiceStarted:4,overdelivery:1.5,workCreated:0.5,dupRef:0.4,expired:0.4,expirySoon:0.3,noDate:0.3,emptyBatch:0.3,noDateInconsistent:0.3,crossdockSO:0.5}};
+const CEC_DEFAULT={dupRef:3.5, expired:4.5, expirySoon:1.5, noDateInconsistent:3.0, noDate:1.0, emptyBatch:1.3, overdelivery:2.2, crossdockSO:4.0, workCreated:4.0, invoiceStarted:4.5};
 const CEC_SUM=Object.values(CEC_DEFAULT).reduce((a,b)=>a+b,0);
 const CEC_KEY='cec_brain_v1';
 function cecLoad(){ try{ const b=JSON.parse(localStorage.getItem(CEC_KEY)); if(b&&b.weights){ for(const k in CEC_DEFAULT) if(!(k in b.weights)) b.weights[k]=CEC_DEFAULT[k]; return b; } }catch(e){} return {weights:Object.assign({},CEC_DEFAULT), cases:0, log:[]}; }
@@ -355,27 +356,40 @@ function cecFeatures(){
   const byPoItem={}; lpRows.forEach(r=>{ const po=getPO(r),it=getItem(r); if(po==null||it==null) return; const k=po+'||'+it; if(!byPoItem[k]) byPoItem[k]={total:0}; byPoItem[k].total+=(getQty(r)||0); });
   const poIndex={}; if(poRows) poRows.forEach(r=>{ const po=getPO(r),it=getItem(r); if(po==null||it==null) return; poIndex[po+'||'+it]=r; });
   const soByItem={}; if(soRows) soRows.forEach(r=>{ const it=getItem(r); if(it==null) return; const so=getSO(r); (soByItem[it]=soByItem[it]||[]).push(so); });
-  return lpRows.map((r,idx)=>{
+  const basis=lpRows.map((r,idx)=>{
     const pb=parseBatch(getBatch(r)); const it=getItem(r); const po=getPO(r);
-    const f={dupRef:0,expired:0,expirySoon:0,noDateInconsistent:0,noDate:0,emptyBatch:0,overdelivery:0,crossdockSO:0,workCreated:0};
-    const reasons=[]; let pct=null; let days=null;
+    const f={dupRef:0,expired:0,expirySoon:0,noDateInconsistent:0,noDate:0,emptyBatch:0,overdelivery:0,crossdockSO:0,workCreated:0,invoiceStarted:0};
+    const reasons=[]; const hard=[]; let pct=null; let days=null;
     if(pb.hasDate&&pb.date){ days=Math.round((pb.date-TODAY)/DAY);
       if(days<=0){ f.expired=1; reasons.push('batch vervallen ('+fmtDate(pb.date)+')'); }
       else{ f.expirySoon=Math.max(0,Math.min(1,(45-days)/45)); if(f.expirySoon>0) reasons.push('vervalt over '+days+' dag'+(days===1?'':'en')); }
     } else if(pb.empty){ f.emptyBatch=1; reasons.push('geen batch ingevuld'); if(itemHasBatch[it]){ f.noDateInconsistent=1; reasons.push('item heeft elders wel een batch'); } }
     else { f.noDate=1; reasons.push('batch zonder datum ('+pb.raw+')'); if(itemHasBatch[it]){ f.noDateInconsistent=1; reasons.push('item heeft elders wel een datum'); } }
     const ref=getRef(r); if(ref!=null&&refCount[ref]>1){ f.dupRef=1; reasons.push('referentie komt '+refCount[ref]+'x voor'); } const wq=getWorkQty(r); if(wq>0){ f.workCreated=1; reasons.push('werk al aangemaakt voor deze regel (qty '+wq+')'); }
-    const pr=poIndex[po+'||'+it]; if(pr){ const rem=getRemainder(pr); const tot=byPoItem[po+'||'+it].total; if(rem!=null&&rem>0){ pct=((tot-rem)/rem)*100; if(pct>0){ f.overdelivery=Math.max(0,Math.min(1,pct/100)); reasons.push('levering '+pct.toFixed(0)+'% t.o.v. remainder'); } } } if(soByItem[it]&&soByItem[it].length){ f.crossdockSO=1; const sos=soByItem[it].filter(function(s){return s;}); reasons.push('open sales order'+(sos.length?' ('+sos.slice(0,2).join(', ')+')':'')+' → crossdock houdt werk vast'); }
-    const fm=CEC_FOCUS[CEC_focus]||null; let score=0; for(const k in f){ const mult=fm?(fm[k]||1):1; score+=brain.weights[k]*f[k]*mult; }
-    return {id:idx,row:r,f:f,score:score,reasons:reasons,pct:pct,days:days};
+    const pr=poIndex[po+'||'+it]; if(pr){ const rem=getRemainder(pr); const ord=getQty(pr); const tot=byPoItem[po+'||'+it].total; if(ord!=null&&rem!=null&&!isNaN(ord)&&!isNaN(rem)&&(ord-rem)>0.0001){ f.invoiceStarted=1; const t='op deze PO-regel is al '+(ord-rem).toFixed(2)+' van '+ord.toFixed(2)+' ontvangen &rarr; facturatie gestart, D365 weigert elke wijziging van het regelbedrag'; reasons.push(t); hard.push(t); } if(rem!=null&&rem>0){ pct=((tot-rem)/rem)*100; if(pct>0){ f.overdelivery=Math.max(0,Math.min(1,pct/100)); reasons.push('levering '+pct.toFixed(0)+'% t.o.v. remainder'); } } } if(soByItem[it]&&soByItem[it].length){ f.crossdockSO=1; const sos=soByItem[it].filter(function(s){return s;}); reasons.push('open sales order'+(sos.length?' ('+sos.slice(0,2).join(', ')+')':'')+' → crossdock houdt werk vast'); }
+    return {id:idx,row:r,f:f,score:0,reasons:reasons,hard:hard,pct:pct,days:days};
   });
+  // Ruisdemping: een signaal dat bijna elke regel draagt, onderscheidt niets.
+  // Zeldzaam signaal houdt zijn volle gewicht, alomtegenwoordig signaal zakt naar 1/4.
+  const n=basis.length||1; const prev={};
+  for(const k in CEC_DEFAULT){ let c=0; basis.forEach(function(b){ if(b.f[k]>0) c++; }); prev[k]=c/n; }
+  const fm=CEC_FOCUS[CEC_focus]||null;
+  basis.forEach(function(b){
+    let score=0;
+    for(const k in b.f){ const mult=fm?(fm[k]||1):1; const damp=1/(1+3*(prev[k]||0)); score+=brain.weights[k]*b.f[k]*mult*damp; }
+    b.score=score;
+  });
+  // Een hard feit dat de helft of meer van de regels raakt, wijst niets aan: terug naar gokken.
+  if(prev.invoiceStarted>=0.5) basis.forEach(function(b){ b.hard=[]; });
+  return basis;
 }
-function computeCandidates(){ if(!lpRows) return []; return cecFeatures().filter(function(c){return c.score>0 && !CEC_dismissed.has(c.id);}).sort((a,b)=>b.score-a.score); }
-function cecConf(cand){ if(!cand.length) return 0; const s1=cand[0].score; const topItem=getItem(cand[0].row); let s2=0; for(let i=1;i<cand.length;i++){ if(getItem(cand[i].row)!==topItem){ s2=cand[i].score; break; } } if(s2<=0) return 95; return Math.round(Math.max(50,Math.min(99, 100*s1/(s1+s2)))); }
+function computeCandidates(){ if(!lpRows) return []; return cecFeatures().filter(function(c){return c.score>0 && !CEC_dismissed.has(c.id);}).sort(function(a,b){ const ha=(a.hard&&a.hard.length)?1:0, hb=(b.hard&&b.hard.length)?1:0; if(ha!==hb) return hb-ha; return b.score-a.score; }); }
+function cecConf(cand){ if(!cand.length) return 0; if(cand[0].hard&&cand[0].hard.length) return 99; const s1=cand[0].score; const topItem=getItem(cand[0].row); let s2=0; for(let i=1;i<cand.length;i++){ if(getItem(cand[i].row)!==topItem){ s2=cand[i].score; break; } } if(s2<=0) return 95; return Math.round(Math.max(50,Math.min(99, 100*s1/(s1+s2)))); }
 
 let CEC_planText='';
 function cecActionTip(c){
   const f=c.f;
+  if(f.invoiceStarted) return 'Op deze PO-regel is al een deel ontvangen en gefactureerd. D365 blokkeert dan elke boeking die het regelbedrag raakt &mdash; ook als het aantal past. Haal deze LP uit de packing structure zodat de rest van de container doorloopt; het stuk zelf daarna handmatig ontvangen op de PO-regel, of het restant afsluiten. Los je dit niet op de PO op, dan komt dezelfde fout terug bij de volgende zending met deze PO.';
   if(f.workCreated&&!f.dupRef&&!f.crossdockSO) return 'Er is al werk aangemaakt voor deze regel (zie kolom Work created quantity): All work &rarr; filter op load/shipment &rarr; Cancel work; daarna reset + retry. Pas dan kan je de regel aanpassen of verwijderen.'; if(f.dupRef) return 'Duplicate reference: meerdere license plates wijzen naar dezelfde bestelorderregel. Verwijder de dubbele LP (hou de juiste) en check bestaand werk (All work → Cancel work).';
   if(f.crossdockSO) return 'Open sales order op dit item: crossdock pint de inbound en maakt werk aan. Annuleer eerst het werk (All work → Cancel work) of handel de SO af; blijft het blokkeren, haal dan deze regel eruit. Check ook de reservering: SO-regel → Inventory → Reservation → verwijderen.';
   if(f.expired) return 'Batch is vervallen: haal deze LP uit de container (of corrigeer de batchdatum als het een tikfout is).';
@@ -410,8 +424,13 @@ function renderDiagnosis(){
   cecRenderList(); cecRenderBrain();
   if(!cand.length){ box.innerHTML='<div class="results-block"><h2>&#129504; Slimme diagnose</h2><div class="no-flags">Geen duidelijke signalen gevonden. Controleer of de kolommen herkend zijn (juiste export?), of bekijk de volledige ranglijst.</div></div>'; return; }
   const top=cand[0]; const conf=cecConf(cand);
+  // Deze foutmelding valt niet te beoordelen zonder de open PO-regels.
+  const mistPO=(CEC_focus==='sourcedoc'&&!poRows);
   let h='<div class="results-block" style="border:2px solid var(--dib)"><h2>&#129504; Slimme diagnose <span class="hint">&mdash; leert van jullie feedback</span></h2>';
-  h+='<div style="padding:6px 2px 10px"><b>Meest waarschijnlijke oorzaak</b> &nbsp; <span class="badge amber">zekerheid '+conf+'%</span></div>';
+  const isHard=!!(top.hard&&top.hard.length);
+  h+='<div style="padding:6px 2px 10px"><b>'+(isHard?'Blokkerend feit gevonden':'Meest waarschijnlijke oorzaak')+'</b> &nbsp; <span class="badge '+(isHard?'red':'amber')+'">'+(isHard?'feit &mdash; geen gok':'zekerheid '+conf+'%')+'</span></div>';
+  if(mistPO){ h+='<div style="margin:-2px 0 10px;padding:8px 10px;border:1px solid var(--red);border-radius:8px;background:var(--red-bg);line-height:1.5"><b>&#9888; Upload eerst export 2 (Open purchase order lines).</b> Deze foutmelding komt van een PO-regel waarop al gefactureerd is &mdash; dat staat <i>alleen</i> in die export (kolommen Quantity en Deliver remainder). Zonder die export is onderstaande een gok.</div>'; }
+  if(isHard){ h+='<div class="hint" style="margin:-2px 0 8px;line-height:1.5">&#9432; Dit is geen gewogen gok: het staat hard in de PO-export. '+top.hard.join('; ')+'</div>'; }
   if(conf<=60){ h+='<div class="hint" style="margin:-2px 0 8px;line-height:1.5">&#9432; Waarom niet zekerder? Meerdere items hebben hier <b>exact dezelfde signalen</b> — uit deze export alleen valt het foute item niet te onderscheiden. '+(soRows?'':'Upload <b>export 3</b> (Open sales order lines) en ')+'kies bovenaan de <b>juiste foutmelding</b>, dan kan de tool het er beter uitpikken. Weet je het zelf al? Klik dan gewoon op het juiste item in de volledige ranglijst.</div>'; }
   h+='<table><tbody>';
   h+='<tr><td style="width:130px;color:var(--muted)">License plate</td><td class="mono">'+(getLP(top.row)||'&mdash;')+'</td></tr>';
